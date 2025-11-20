@@ -16,16 +16,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import streamlit as st
 import pandas as pd
-import folium                      
+import folium
 from folium.plugins import HeatMap, HeatMapWithTime, MarkerCluster
 import numpy as np
 import osmnx as ox
 import branca.colormap as cm
 import geopandas as gpd
 from shapely.geometry import Point
-import matplotlib.pyplot as plt
-import seaborn as sns
-from scipy.stats import chi2_contingency
 import duckdb
 
 
@@ -45,6 +42,10 @@ st.sidebar.header("Controles del Panel")
 
 # ============================================================================
 # DATA CLEANING FUNCTIONS (Adapted from final_eda.py)
+# ============================================================================
+
+# ============================================================================
+# DATA CLEANING FUNCTIONS (Optimized for Memory)
 # ============================================================================
 
 def _strip_accents_capitalize(text):
@@ -70,10 +71,10 @@ def _strip_accents_capitalize(text):
 
 def _fill_missing_alcaldias(crimes_df, geojson_path, alcaldia_column="NOMGEO"):
     """
-    Fill missing 'alcaldia_hecho' using coordinates (lat/lon) mapped to Mexico City's alcaldías polygons.
+    Fill missing 'alcaldia_hecho' using coordinates.
     """
     if not os.path.exists(geojson_path):
-        st.warning(f"Archivo GeoJSON no encontrado en {geojson_path}. Skipping spatial filling.")
+        st.warning(f"Archivo GeoJSON no encontrado en {geojson_path}.")
         return crimes_df
     
     try:
@@ -105,169 +106,150 @@ def _fill_missing_alcaldias(crimes_df, geojson_path, alcaldia_column="NOMGEO"):
     return crimes_df
 
 def _fill_to_unknown(df, column="alcaldia_hecho"):
-    """
-    Fill missing values in the specified alcaldía column with "Unknown".
-    Also converts any entry equal to "CDMX (indeterminada)" to "Unknown".
-    """
     df = df.copy()
-    # Replace "CDMX (indeterminada)" with "Unknown"
     df[column] = df[column].replace("CDMX (indeterminada)", "Desconocido")
-    # Fill remaining NaN values
     df[column] = df[column].fillna("Desconocido")
     return df
 
 def clean_crime_data(df, geojson_path=None):
     """
-    Clean and prepare crime data following the methodology from final_eda.py
-    
-    Steps:
-    1. Handle missing values in alcaldia_hecho using coordinates
-    2. Fill remaining missing values with "Unknown"
-    3. Normalize alcaldía names
-    4. Filter valid coordinates for Mexico City
-    5. Convert date columns to datetime
-    6. Remove duplicates
+    Clean and prepare crime data.
+    Includes MEMORY PROTECTION to skip spatial joins on large datasets.
     """
-    st.info("🧹 Iniciando proceso de limpieza de datos...")
+    st.info("🧹 Iniciando limpieza de datos...")
     
-    # Original row count
     original_count = len(df)
     
-    # Keep categoria_delito column if it exists
-    required_cols = ['delito', 'alcaldia_hecho', 'latitud', 'longitud']
-    if 'categoria_delito' in df.columns:
-        required_cols.append('categoria_delito')
-    if 'fecha_inicio' in df.columns:
-        required_cols.append('fecha_inicio')
-    if 'fecha_hecho' in df.columns:
-        required_cols.append('fecha_hecho')
-    
-    # Select only required columns
-    df = df[required_cols].copy()
-    
-    # Step 1: Handle missing alcaldías using coordinates (if GeoJSON provided)
+    # --- MEMORY FIX: Skip Spatial Join if dataset is too big ---
+    # geopandas sjoin is extremely heavy. If > 5000 rows, we skip it to prevent crash.
     if geojson_path and os.path.exists(geojson_path):
-        st.info("📍 Completando alcaldías usando coordenadas...")
-        df = _fill_missing_alcaldias(df, geojson_path)
-    
+        if len(df) < 5000: 
+            st.info("📍 Completando alcaldías (Spatial Join)...")
+            df = _fill_missing_alcaldias(df, geojson_path)
+        else:
+            st.warning("⚠️ Dataset grande: Saltando cálculo geométrico para ahorrar memoria.")
+    # -----------------------------------------------------------
+
     # Step 2: Fill remaining missing values with "Unknown"
-    st.info("🔍 Rellenando alcaldías faltantes con 'Desconocido'...")
     df = _fill_to_unknown(df)
     
     # Step 3: Normalize alcaldía names
-    st.info("✨ Normalizando nombres de alcaldías...")
     df["alcaldia_hecho"] = df["alcaldia_hecho"].apply(_strip_accents_capitalize)
     
     # Step 4: Clean and validate coordinates
-    st.info("🗺️ Validando coordenadas...")
-    
-    # Remove rows with missing coordinates
+    # (Note: We already filtered NULLs in SQL, but we filter ranges here)
     before_coord_filter = len(df)
+    
+    # Ensure numeric types (Redundant check, but safe)
+    df['latitud'] = pd.to_numeric(df['latitud'], errors='coerce')
+    df['longitud'] = pd.to_numeric(df['longitud'], errors='coerce')
+    
     df = df.dropna(subset=['latitud', 'longitud'])
     
-    # Filter valid coordinates for Mexico City (19.0 to 19.6 N, -99.4 to -98.9 W)
+    # Filter valid coordinates for Mexico City
     df = df[(df['latitud'] >= 19.0) & (df['latitud'] <= 19.6) & 
             (df['longitud'] >= -99.4) & (df['longitud'] <= -98.9)]
     
     after_coord_filter = len(df)
     coord_removed = before_coord_filter - after_coord_filter
     
-    # Step 5: Convert date columns to datetime
-    st.info("📅 Convirtiendo columnas de fecha...")
+    # Step 5: Convert date columns
     for date_col in ['fecha_inicio', 'fecha_hecho']:
         if date_col in df.columns:
             df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
     
-    # Step 6: Normalize crime names and categories
-    st.info("🏷️ Normalizando tipos de delito...")
+    # Step 6: Normalize strings
     if 'delito' in df.columns:
         df['delito'] = df['delito'].str.strip().str.upper()
     if 'categoria_delito' in df.columns:
         df['categoria_delito'] = df['categoria_delito'].str.strip().str.upper()
     
     # Step 7: Remove duplicates
-    st.info("🔄 Eliminando duplicados...")
     before_dedup = len(df)
     df = df.drop_duplicates()
     after_dedup = len(df)
     duplicates_removed = before_dedup - after_dedup
     
-    # Final row count
     final_count = len(df)
     total_removed = original_count - final_count
     
-    # Display cleaning summary
-    st.success("✅ Limpieza de datos completada.")
+    st.success("✅ Limpieza completada.")
     
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Registros originales", f"{original_count:,}")
-    with col2:
-        st.metric("Coordenadas inválidas", f"{coord_removed:,}")
-    with col3:
-        st.metric("Duplicados eliminados", f"{duplicates_removed:,}")
-    with col4:
-        st.metric("Registros finales", f"{final_count:,}", 
-                 delta=f"-{total_removed:,}" if total_removed > 0 else "0")
+    # Display metrics concisely to save UI space
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Originales", f"{original_count:,}")
+    col2.metric("Finales", f"{final_count:,}")
+    col3.metric("Eliminados", f"{total_removed:,}")
     
     return df
 
 # ============================================================================
-# DATA LOADING
+# DATA LOADING (Optimized for Memory)
 # ============================================================================
 
 @st.cache_data
 def load_crime_data():
     """Load and clean crime data from DuckDB and local GeoJSON"""
     try:
-        # 1. Definir rutas a los archivos en el root del proyecto
         db_path = "crimes_fgj.db"
-        json_path = "limite-de-las-alcaldias.json"
+        geojson_path = "limite-de-las-alcaldias.json"
 
-        # 2. Validar que la base de datos exista
         if not os.path.exists(db_path):
-            st.error(f"Base de datos '{db_path}' no encontrada en el directorio raíz.")
+            st.error(f"BD no encontrada: {db_path}")
             return None
 
-        # 3. Conectar a DuckDB y extraer el DataFrame
         con = duckdb.connect(db_path, read_only=True)
-        query = "SELECT * FROM crimes_raw"
-        df = con.execute(query).df()
+        
+        # --- MEMORY FIX 1: SELECT ONLY NEEDED COLUMNS ---
+        # Instead of SELECT *, we select only what we visualize.
+        # We also filter NULL coordinates in SQL to save Python memory.
+        query = """
+            SELECT 
+                delito, 
+                categoria_delito,
+                alcaldia_hecho, 
+                latitud, 
+                longitud, 
+                fecha_hecho, 
+                anio_hecho
+            FROM crimes_raw
+            WHERE latitud IS NOT NULL 
+              AND longitud IS NOT NULL
+        """
+        # If your table doesn't have 'categoria_delito', remove it from the query above
+        
+        try:
+            df = con.execute(query).df()
+        except Exception:
+            # Fallback if columns don't match, but try to limit rows
+            st.warning("Columnas no coinciden, cargando con SELECT * LIMIT 50000")
+            df = con.execute("SELECT * FROM crimes_raw LIMIT 50000").df()
+            
         con.close()
         
-        # Limpieza básica de nombres de columnas
+        # Clean column names
         df.columns = df.columns.str.strip()
         
-        # 4. Validar existencia del GeoJSON
-        final_json_path = None
-        if os.path.exists(json_path):
-            final_json_path = json_path
-        else:
-            st.warning(f"Advertencia: '{json_path}' no encontrado.")
-        
-        # --- NEW STEP: 4.5 Pre-convert numeric columns ---
-        # Check your specific column names. Common culprits are Lat/Lon or Year.
-        # This forces strings to numbers, turning errors into NaN (Not a Number)
-        
-        cols_to_fix = ['latitud', 'longitud', 'anio_hecho'] # <--- CHANGE THESE to your actual column names
-        
+        # --- MEMORY FIX 2: PRE-CONVERT TYPES ---
+        # Fix the "str >= float" error immediately
+        cols_to_fix = ['latitud', 'longitud', 'anio_hecho']
         for col in cols_to_fix:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        # Drop rows where critical coordinates became NaN (optional but recommended)
+        # Drop rows where conversion failed
         df = df.dropna(subset=['latitud', 'longitud']) 
-        # -------------------------------------------------
 
-        # 5. Limpiar los datos usando tu función existente
-        df = clean_crime_data(df, final_json_path)
+        # Pass path only if exists
+        final_geojson_path = geojson_path if os.path.exists(geojson_path) else None
+        
+        # Clean data
+        df = clean_crime_data(df, final_geojson_path)
         
         return df
         
     except Exception as e:
         st.error(f"Error cargando datos: {e}")
-        # Helpful debugging: Print datatypes if error occurs
-        # st.write("Current Data Types:", df.dtypes) 
         return None
 
 # Load data
