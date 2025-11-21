@@ -13,8 +13,8 @@ def theme_css(mode: str = "auto") -> str:
     
     # Colores base (Light Mode - Azul Pálido Sutil)
     light_mode_vars = """
-    --bg:#b1e7ff;       /* Azul Pálido Sutil (Fondo principal) */
-    --bg-alt: #6cd1ff;   /* Azul Claro pálido (Fondo secundario/Sidebar) */
+    --bg:#a8d0ff;       /* Azul Pálido Sutil (Fondo principal) */
+    --bg-alt: #6eb8f5;   /* Azul Claro pálido (Fondo secundario/Sidebar) */
     --fg: #000000ff;       /* Negro (Texto principal) */
     --muted: #000000ff;      /* Gris para texto 'muted' */
     --primary: #1ebcde;    /* Azul Thales Claro (Acento) */
@@ -23,7 +23,7 @@ def theme_css(mode: str = "auto") -> str:
 
     # Colores Dark Mode
     dark_mode_vars = """
-    --bg: #232a95ff;       /* Azul Thales Oscuro (Fondo principal) */
+    --bg: #08306b;       /* Azul Thales Oscuro (Fondo principal) */
     --bg-alt: #000000;     /* Negro (Fondo secundario/Sidebar) */
     --fg: #ffffff;         /* Blanco (Texto principal) */
     --muted: #a0a3ad;      /* Gris claro para texto 'muted' */

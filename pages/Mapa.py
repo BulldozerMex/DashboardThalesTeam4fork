@@ -24,6 +24,8 @@ import branca.colormap as cm
 import geopandas as gpd
 from shapely.geometry import Point
 import duckdb
+import matplotlib.pyplot as plt
+import altair as alt
 
 
 # Page configuration
@@ -175,12 +177,6 @@ def clean_crime_data(df, geojson_path=None):
     
     st.success("✅ Limpieza completada.")
     
-    # Display metrics concisely to save UI space
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Originales", f"{original_count:,}")
-    col2.metric("Finales", f"{final_count:,}")
-    col3.metric("Eliminados", f"{total_removed:,}")
-    
     return df
 
 # ============================================================================
@@ -276,7 +272,7 @@ viz_type = st.sidebar.selectbox(
 # Filter controls
 st.sidebar.subheader("Filters")
 
-# Date range filter
+# --- 1. Date Filter ---
 if 'fecha_hecho' in crime_df.columns:
     min_date = crime_df['fecha_hecho'].min()
     max_date = crime_df['fecha_hecho'].max()
@@ -289,19 +285,19 @@ if 'fecha_hecho' in crime_df.columns:
     )
     
     if len(date_range) == 2:
-        crime_df_filtered = crime_df[
+        crime_df_base = crime_df[
             (crime_df['fecha_hecho'] >= pd.Timestamp(date_range[0])) &
             (crime_df['fecha_hecho'] <= pd.Timestamp(date_range[1]))
         ].copy()
     else:
-        crime_df_filtered = crime_df.copy()
+        crime_df_base = crime_df.copy()
 else:
-    crime_df_filtered = crime_df.copy()
+    crime_df_base = crime_df.copy()
 
-# Crime category filter
-if 'categoria_delito' in crime_df_filtered.columns:
+# --- 2. Category Filter ---
+if 'categoria_delito' in crime_df_base.columns:
     st.sidebar.subheader("Filtro por categoría de delito")
-    crime_categories = sorted(crime_df_filtered['categoria_delito'].dropna().unique())
+    crime_categories = sorted(crime_df_base['categoria_delito'].dropna().unique())
     
     col_cat1, col_cat2 = st.sidebar.columns(2)
     with col_cat1:
@@ -321,11 +317,12 @@ if 'categoria_delito' in crime_df_filtered.columns:
     )
     
     if selected_categories:
-        crime_df_filtered = crime_df_filtered[crime_df_filtered['categoria_delito'].isin(selected_categories)]
+        crime_df_base = crime_df_base[crime_df_base['categoria_delito'].isin(selected_categories)]
 
-# Crime type filter
+# --- 3. Crime Type Filter Setup ---
+# We define the options based on the base data, but we apply the filter LATER to separate datasets.
 st.sidebar.subheader("Filtro por tipo de crimen")
-crime_types = sorted(crime_df_filtered['delito'].unique())
+crime_types = sorted(crime_df_base['delito'].unique())
 
 col1, col2 = st.sidebar.columns(2)
 with col1:
@@ -344,19 +341,34 @@ selected_crimes = st.sidebar.multiselect(
     default=st.session_state.selected_crimes
 )
 
-if selected_crimes:
-    crime_df_filtered = crime_df_filtered[crime_df_filtered['delito'].isin(selected_crimes)]
+# --- 4. Alcaldia Filter Setup ---
+# To maintain UI consistency, options here depend on the "current view" (which includes crime types)
+# BUT we will apply this filter to the base data to create the "Broad" dataset.
+temp_view_df = crime_df_base[crime_df_base['delito'].isin(selected_crimes)] if selected_crimes else crime_df_base
+alcaldias = sorted(temp_view_df['alcaldia_hecho'].dropna().unique())
 
-# Alcaldia (borough) filter
-alcaldias = sorted(crime_df_filtered['alcaldia_hecho'].dropna().unique())
 selected_alcaldias = st.sidebar.multiselect(
     "Seleccionar Alcaldías",
     alcaldias,
     default=alcaldias
 )
 
+# --- 5. Construct Final Dataframes ---
+
+# A) Broad Context DataFrame (Date + Category + Alcaldia, IGNORING specific Crime Type)
+# This is used for the "Top 10" chart to show what else is happening in these areas/times.
 if selected_alcaldias:
-    crime_df_filtered = crime_df_filtered[crime_df_filtered['alcaldia_hecho'].isin(selected_alcaldias)]
+    crime_df_broad = crime_df_base[crime_df_base['alcaldia_hecho'].isin(selected_alcaldias)]
+else:
+    crime_df_broad = crime_df_base
+
+# B) Specific Filtered DataFrame (Broad + Specific Crime Type)
+# This is used for the Map, Stats, and specific charts.
+if selected_crimes:
+    crime_df_filtered = crime_df_broad[crime_df_broad['delito'].isin(selected_crimes)]
+else:
+    crime_df_filtered = crime_df_broad
+
 
 # Additional layers toggle
 st.sidebar.subheader("Capas adicionales")
@@ -847,32 +859,239 @@ if st.sidebar.button("Descargar mapa como HTML"):
 # STATISTICS
 # ============================================================================
 
+# Custom CSS for the statistics cards
+st.markdown("""
+<style>
+div.stat-card {
+    background-color: #ffffff;
+    padding: 20px;
+    border-radius: 10px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    text-align: center;
+    border: 1px solid #e0e0e0;
+    margin-bottom: 10px;
+}
+div.stat-title {
+    color: #000000;
+    font-weight: 900; /* Extra bold for titles */
+    font-size: 16px;
+    margin-bottom: 10px;
+}
+div.stat-value {
+    color: #000000;
+    font-size: 28px;
+    font-weight: bold;
+}
+/* NUEVO: Estilo para bordes redondeados en gráficas Altair */
+div[data-testid="stAltairChart"] {
+    background-color: #ffffff;
+    border-radius: 15px;
+    padding: 10px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    border: 1px solid #e0e0e0;
+}
+canvas {
+    border-radius: 15px !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.subheader("Estadísticas de Crimen")
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3 = st.columns(3)
+
+# Helper function to render card
+def stat_card(title, value):
+    return f"""
+    <div class="stat-card">
+        <div class="stat-title">{title}</div>
+        <div class="stat-value">{value}</div>
+    </div>
+    """
 
 with col1:
-    st.metric("Crimenes totales", f"{len(crime_df_filtered):,}")
+    st.markdown(stat_card("Crimenes totales", f"{len(crime_df_filtered):,}"), unsafe_allow_html=True)
 
 with col2:
-    st.metric("Tipos de crimenes", len(crime_df_filtered['delito'].unique()))
+    st.markdown(stat_card("Tipos de crimenes", len(crime_df_filtered['delito'].unique())), unsafe_allow_html=True)
 
 with col3:
-    st.metric("Alcaldías", len(crime_df_filtered['alcaldia_hecho'].unique()))
+    st.markdown(stat_card("Alcaldías", len(crime_df_filtered['alcaldia_hecho'].unique())), unsafe_allow_html=True)
 
-with col4:
-    if 'fecha_hecho' in crime_df_filtered.columns:
-        date_range_days = (crime_df_filtered['fecha_hecho'].max() - crime_df_filtered['fecha_hecho'].min()).days
-        st.metric("Date Range", f"{date_range_days} days")
-
-# Top crimes chart
+# --- Chart: Top 10 Crimes ---
 st.subheader("Top 10 tipos de crimen")
-top_crimes = crime_df_filtered['delito'].value_counts().head(10)
-st.bar_chart(top_crimes)
 
-# Crimes by Alcaldía
+# Use BROAD DataFrame to show global context, ignoring specific crime type selection
+top_crimes_series = crime_df_broad['delito'].value_counts().head(10)
+top_crimes_df = top_crimes_series.reset_index()
+top_crimes_df.columns = ['Delito', 'Cantidad']
+
+# Create chart
+chart_top = alt.Chart(top_crimes_df).mark_bar(color='#1f77b4').encode(
+    x=alt.X('Delito', sort='-y', axis=alt.Axis(labelAngle=-45, title='Tipo de Delito', labelOverlap=False)),
+    y=alt.Y('Cantidad', title='Número de Crímenes'),
+    tooltip=['Delito', 'Cantidad']
+).properties(
+    background='white',
+    height=400
+).configure_axis(
+    labelColor='black',
+    titleColor='black',
+    gridColor='#eeeeee'
+).configure_view(
+    strokeWidth=0,
+    fill='white'
+).interactive()
+
+st.altair_chart(chart_top, use_container_width=True)
+
+# --- Chart: Crimes by Alcaldia ---
 st.subheader("Crimenes por Alcaldía")
-crimes_by_alcaldia = crime_df_filtered['alcaldia_hecho'].value_counts()
-st.bar_chart(crimes_by_alcaldia)
+
+# Use Specific Filtered DataFrame (shows distribution of SELECTED crimes)
+crimes_by_alcaldia_series = crime_df_filtered['alcaldia_hecho'].value_counts()
+crimes_by_alcaldia_df = crimes_by_alcaldia_series.reset_index()
+crimes_by_alcaldia_df.columns = ['Alcaldía', 'Cantidad']
+
+chart_alcaldias = alt.Chart(crimes_by_alcaldia_df).mark_bar(color='#1f77b4').encode(
+    # Added labelOverlap=False to force labels to appear
+    x=alt.X('Alcaldía', sort='-y', axis=alt.Axis(labelAngle=-45, title='Alcaldía', labelOverlap=False)),
+    y=alt.Y('Cantidad', title='Número de Crímenes'),
+    tooltip=['Alcaldía', 'Cantidad']
+).properties(
+    background='white',
+    height=400
+).configure_axis(
+    labelColor='black',
+    titleColor='black',
+    gridColor='#eeeeee'
+).configure_view(
+    strokeWidth=0,
+    fill='white'
+).interactive()
+
+st.altair_chart(chart_alcaldias, use_container_width=True)
+
+# ============================================================================
+# NEW CHARTS: TEMPORAL & VIOLENCE ANALYSIS
+# ============================================================================
+st.markdown("---")
+
+col_time, col_violence = st.columns(2)
+
+with col_time:
+    st.subheader("Crímenes por día de la semana")
+    
+    # Ensure date format and extract day name
+    crime_df_filtered['fecha_hecho'] = pd.to_datetime(crime_df_filtered['fecha_hecho'])
+    crime_df_filtered['dia_num'] = crime_df_filtered['fecha_hecho'].dt.dayofweek
+    
+    days_map = {0: 'Lunes', 1: 'Martes', 2: 'Miércoles', 3: 'Jueves', 4: 'Viernes', 5: 'Sábado', 6: 'Domingo'}
+    
+    daily_counts = crime_df_filtered['dia_num'].value_counts().sort_index()
+    daily_counts.index = daily_counts.index.map(days_map)
+    
+    # Prepare dataframe for Altair
+    daily_df = daily_counts.reset_index()
+    daily_df.columns = ['Día', 'Crímenes']
+    
+    # Force correct order for the X axis
+    day_order = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
+    
+    # Updated to Area Chart
+    area_chart = alt.Chart(daily_df).mark_area(
+        line=True,
+        color='#1f77b4',
+        opacity=0.5
+    ).encode(
+        x=alt.X('Día', sort=day_order, title='Día de la Semana'),
+        y=alt.Y('Crímenes', title='Total de Crímenes'),
+        tooltip=['Día', 'Crímenes']
+    ).properties(
+        height=350,
+        background='white'
+    ).configure_axis(
+        labelColor='black',
+        titleColor='black',
+        gridColor='#eeeeee'
+    ).configure_view(
+        strokeWidth=0,
+        fill='white'
+    ).interactive()
+    
+    st.altair_chart(area_chart, use_container_width=True)
+
+with col_violence:
+    st.subheader("Violentos vs No Violentos")
+    
+    # Function to classify violent crimes based on keywords
+    def classify_violence(row):
+        # Combine columns to increase match probability
+        # We check both 'delito' and 'categoria_delito'
+        d = str(row['delito']) if 'delito' in row else ''
+        c = str(row['categoria_delito']) if 'categoria_delito' in row else ''
+        text = (d + " " + c).upper()
+        
+        # Common keywords in CDMX crime data indicating violence
+        keywords = [
+            'VIOLENCIA', 'HOMICIDIO', 'LESIONES', 'ARMA', 'VIOLACION', 
+            'SECUESTRO', 'FEMINICIDIO', 'DISPARO', 'ASALTO', 'C/V', 
+            'AGRESION', 'MUERTE', 'BALA', 'PUNZOCORTANTE', 'GOLPE',
+            'AMENAZAS', 'ABUSO'
+        ]
+        
+        if any(k in text for k in keywords):
+            return "Violento"
+        return "No Violento"
+
+    # Apply row-wise classification (safer than column-wise if keywords are split)
+    violence_counts = crime_df_filtered.apply(classify_violence, axis=1).value_counts()
+    
+    # Ensure consistent order for colors: Violento first, then No Violento
+    # We reindex to guarantee the colors match the labels correctly
+    violence_counts = violence_counts.reindex(['Violento', 'No Violento']).dropna()
+
+    # Create Pie Chart using Matplotlib for transparent background and custom colors
+    fig, ax = plt.subplots(figsize=(6, 6))
+    
+    # Blue tones: Dark Blue (Violent), Custom Light Blue (Non-Violent)
+    colors_map = {'Violento': '#1f77b4', 'No Violento': '#68bcff'}
+    colors = [colors_map.get(label, '#cccccc') for label in violence_counts.index]
+    
+    # Handle empty data case
+    if not violence_counts.empty:
+        wedges, texts, autotexts = ax.pie(
+            violence_counts, 
+            labels=None, # Removed labels from the chart itself
+            autopct='%1.1f%%', 
+            startangle=90, 
+            colors=colors,
+            textprops={'color':"black", 'weight':'bold', 'fontsize': 12},
+            explode=[0.05] * len(violence_counts) # Slight separation for all slices
+        )
+        
+        # Create custom legend as a "white card"
+        ax.legend(
+            wedges, 
+            violence_counts.index,
+            title="Categoría",
+            loc="center left",
+            bbox_to_anchor=(1, 0, 0.5, 1),
+            facecolor='white',     # White background
+            edgecolor='lightgray', # Subtle border
+            labelcolor='black',    # Black text
+            framealpha=1,          # Fully opaque
+            fontsize=10
+        )
+        
+    else:
+        ax.text(0.5, 0.5, "No hay datos", ha='center', va='center')
+    
+    # Transparent background for the figure
+    fig.patch.set_alpha(0.0)
+    ax.axis('equal')  
+    
+    st.pyplot(fig, transparent=True)
+
 
 # ============================================================================
 # DATA QUALITY REPORT
