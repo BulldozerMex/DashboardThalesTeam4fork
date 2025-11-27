@@ -118,7 +118,7 @@ def clean_crime_data(df, geojson_path=None):
     Clean and prepare crime data.
     Includes MEMORY PROTECTION to skip spatial joins on large datasets.
     """
-    st.info("🧹 Iniciando limpieza de datos...")
+    
     
     original_count = len(df)
     
@@ -126,7 +126,6 @@ def clean_crime_data(df, geojson_path=None):
     # geopandas sjoin is extremely heavy. If > 5000 rows, we skip it to prevent crash.
     if geojson_path and os.path.exists(geojson_path):
         if len(df) < 5000: 
-            st.info("📍 Completando alcaldías (Spatial Join)...")
             df = _fill_missing_alcaldias(df, geojson_path)
         else:
             st.warning("⚠️ Dataset grande: Saltando cálculo geométrico para ahorrar memoria.")
@@ -174,8 +173,6 @@ def clean_crime_data(df, geojson_path=None):
     
     final_count = len(df)
     total_removed = original_count - final_count
-    
-    st.success("✅ Limpieza completada.")
     
     return df
 
@@ -379,7 +376,7 @@ show_metro = st.sidebar.checkbox("Mostrar estaciones de metro", value=False)
 show_parking = st.sidebar.checkbox("Mostrar estacionamientos", value=False)
 
 # Grid sector settings
-if viz_type in ["Cuadrícula (Probababilidad)", "Zonas Calientes dinámicas", "Todas las capas combinadas"]:
+if viz_type in ["Cuadrícula (probabilidad)", "Zonas calientes dinámicas", "Todas las capas combinadas"]:
     st.sidebar.subheader("Configuración de cuadrícula")
     grid_size = st.sidebar.slider("Tamaño de celda de cuadrícula (km)", 0.5, 5.0, 1.0, 0.5)
     probability_threshold = st.sidebar.slider("Límite de probablidad (%)", 0, 100, 50, 5)
@@ -529,7 +526,7 @@ def add_alcaldias_to_map(m, geojson_path, crime_counts_df):
         crime_dict = {}
         for idx, row in crime_counts_df.iterrows():
             normalized_name = _strip_accents_capitalize(row['alcaldia_hecho'])
-            crime_dict[normalized_name.upper()] = row['count']
+            crime_dict[normalized_name] = row['count']
         
         # Create a colormap for the choropleth
         max_crimes = max(crime_dict.values()) if crime_dict else 1
@@ -542,9 +539,11 @@ def add_alcaldias_to_map(m, geojson_path, crime_counts_df):
         
         def style_function(feature):
             """Style each alcaldía based on crime count"""
-            alcaldia_name = feature['properties'].get('NOMGEO', '').upper()
-            crime_count = crime_dict.get(alcaldia_name, 0)
-            
+            # Normalize the GeoJSON name the same way
+            alcaldia_name = feature['properties'].get('NOMGEO', '')
+            alcaldia_normalized = _strip_accents_capitalize(alcaldia_name)
+            crime_count = crime_dict.get(alcaldia_normalized, 0)
+    
             return {
                 'fillColor': colormap(crime_count) if crime_count > 0 else '#cccccc',
                 'color': 'black',
@@ -582,7 +581,7 @@ def add_alcaldias_to_map(m, geojson_path, crime_counts_df):
         # Add custom popups with crime counts
         gdf = gpd.read_file(geojson_path)
         for idx, row in gdf.iterrows():
-            alcaldia_name = row['NOMGEO'].upper()
+            alcaldia_name = _strip_accents_capitalize(row['NOMGEO'])
             crime_count = crime_dict.get(alcaldia_name, 0)
             
             # Get centroid for label placement
@@ -602,7 +601,7 @@ def add_alcaldias_to_map(m, geojson_path, crime_counts_df):
                         padding: 2px 5px;
                         white-space: nowrap;
                     ">
-                        {row['NOMGEO']}<br>{crime_count:,} crimes
+                        {alcaldia_name}<br>{crime_count:,} crimes
                     </div>
                 ''')
             ).add_to(m)
@@ -663,7 +662,7 @@ if viz_type == "Mapa base con marcadores":
             fillColor='red'
         ).add_to(marker_cluster)
 
-elif viz_type == "Heatmap":
+elif viz_type == "Mapa de calor":
     m = create_base_map()
     
     # Add alcaldías layer if enabled
@@ -682,7 +681,7 @@ elif viz_type == "Heatmap":
         name='Heatmap de crimen'
     ).add_to(m)
 
-elif viz_type == "Cuadrícula (Probabilidad)":
+elif viz_type == "Cuadrícula (probabilidad)":
     m = create_base_map()
     
     # Add alcaldías layer if enabled
@@ -693,7 +692,7 @@ elif viz_type == "Cuadrícula (Probabilidad)":
     lat_bins, lon_bins, grid_counts, grid_probs = create_grid_sectors(crime_df_filtered, grid_size)
     add_grid_to_map(m, lat_bins, lon_bins, grid_probs, probability_threshold/100)
 
-elif viz_type == "Zonas Calientes dinámicas":
+elif viz_type == "Zonas calientes dinámicas":
     m = create_base_map()
     
     # Add alcaldías layer if enabled

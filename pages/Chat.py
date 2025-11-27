@@ -6,20 +6,20 @@ import requests, json
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-st.set_page_config(page_title="Local Chat (Ollama)", page_icon="📚")
+st.set_page_config(page_title="Chat Local (Ollama)", page_icon="📚")
 st.title("📚 Chat  — 100% Local (Ollama)")
 
 # ---------- Sidebar settings ----------
 with st.sidebar:
-    st.header("Settings")
-    model = st.text_input("Ollama model", value="phi3:latest",
-                          help="Examples: llama3, llama3:8b-instruct, phi3, mistral:instruct")
-    top_k = st.slider("Top-k rows as context", 1, 10, 3)
-    max_rows = st.number_input("Limit rows (speed)", 100, 100000, 1000, step=100)
-    temperature = st.slider("Temperature", 0.0, 1.5, 0.7, 0.1)
-    max_tokens = st.slider("Max new tokens", 32, 1024, 256, 32)
-    if st.button("🔄 Reset chat"):
-        st.session_state.messages = [{"role": "assistant", "content": "New chat started!"}]
+    st.header("Configuración")
+    model = st.text_input("Modelo Ollama", value="phi3:latest",
+                          help="Ejemplos: llama3, llama3:8b-instruct, phi3, mistral:instruct")
+    top_k = st.slider("Número de filas k como contexto", 1, 10, 3)
+    max_rows = st.number_input("Limite de filas (velocidad)", 100, 100000, 1000, step=100)
+    temperature = st.slider("Temperatura", 0.0, 1.5, 0.7, 0.1)
+    max_tokens = st.slider("Máximo de tokens nuevos", 32, 1024, 256, 32)
+    if st.button("🔄 Resetear chat"):
+        st.session_state.messages = [{"role": "assistant", "content": "Haz empezado un nuevo chat"}]
         st.rerun()
 
 
@@ -37,17 +37,17 @@ def load_data():
 
 
 df = load_data()
-st.success(f"Loaded {len(df):,} rows × {len(df.columns)} cols")
+st.success(f"Cargadas {len(df):,} filas × {len(df.columns)} columnas")
 st.dataframe(df.head(10), use_container_width=True)
 
 # Choose columns to index
 text_cols = st.multiselect(
-    "Columns to build searchable text (pick titles/notes/description/key fields):",
+    "Columnas para crear texto que se pueda buscar (seleccione titulos/notas/descripción/campos clave):",
     options=list(df.columns),
     default=list(df.columns[: min(3, len(df.columns))])
 )
 if not text_cols:
-    st.warning("Select at least one column for the retriever.")
+    st.warning("Seleccione al menos una columna para el recuperador.")
     st.stop()
 
 # ---------- Build TF-IDF retriever ----------
@@ -71,7 +71,7 @@ def retrieve(query: str, k: int):
 # ---------- Chat state ----------
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hi! Ask something about your CSV and I'll ground my answer on matching rows."}
+        {"role": "assistant", "content": "¡Hola! Pregunta algo sobre tu archivo CSV y basaré mi respuesta en las filas coincidentes."}
     ]
 
 for m in st.session_state.messages:
@@ -113,8 +113,8 @@ def stream_from_ollama(prompt: str):
 
 # ---------- Prompt template ----------
 SYSTEM_INSTRUCTION = (
-    "You are a helpful assistant. Answer ONLY using the provided CSV CONTEXT rows. "
-    "If the answer is not in the context, say you cannot find it."
+    "Eres un asistente útil. Responde SO´LO usando las filas de contexto CSV proporcionadas. "
+    "Si la respuesta no está en el contexto, indica que no la encuentras."
 )
 
 def build_prompt(user_q: str, rows_md: str) -> str:
@@ -126,16 +126,16 @@ def build_prompt(user_q: str, rows_md: str) -> str:
     )
 
 # ---------- Handle user question ----------
-if user_q := st.chat_input("Ask a question about the CSV…"):
+if user_q := st.chat_input("Pregunta algo sobre el CSV…"):
     st.session_state.messages.append({"role": "user", "content": user_q})
     with st.chat_message("user"):
         st.markdown(user_q)
 
     with st.chat_message("assistant"):
-        with st.spinner("Searching relevant rows…"):
+        with st.spinner("BUscando columnas relevantes…"):
             idxs, scores = retrieve(user_q, top_k)
             top_rows = df.iloc[idxs]
-            st.caption("Top-matching rows (used as context):")
+            st.caption("Columnas Top (usadas como contexto):")
             st.dataframe(top_rows, use_container_width=True)
 
             # Compact context block
@@ -144,7 +144,7 @@ if user_q := st.chat_input("Ask a question about the CSV…"):
                 for i in range(len(top_rows))
             )
 
-        with st.spinner("Generating answer (local model)…"):
+        with st.spinner("Generando respuesta…"):
             prompt = build_prompt(user_q, rows_md)
             placeholder = st.empty()
             acc = ""
