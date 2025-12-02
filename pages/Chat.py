@@ -12,7 +12,7 @@ st.title("📚 Chat  — 100% Local (Ollama)")
 # ---------- Sidebar settings ----------
 with st.sidebar:
     st.header("Configuración")
-    model = st.text_input("Modelo Ollama", value="phi3:latest",
+    model = st.text_input("Modelo Ollama", value="phi:latest",
                           help="Ejemplos: llama3, llama3:8b-instruct, phi3, mistral:instruct")
     top_k = st.slider("Número de filas k como contexto", 1, 10, 3)
     max_rows = st.number_input("Limite de filas (velocidad)", 100, 100000, 1000, step=100)
